@@ -4,9 +4,18 @@ import httpx
 import requests
 from datetime import datetime
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from jose import jwt, JWTError
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "PATCH", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 MOCK_BACKEND_URL = "http://127.0.0.1:8001"
 JWT_SECRET = "canarygate-secret-key-2026"
@@ -182,7 +191,7 @@ async def login(identity_type: str = "service"):
 
 @app.middleware("http")
 async def zero_trust_check(request: Request, call_next):
-    if request.url.path == "/login":
+    if request.url.path == "/login" or request.url.path.startswith("/dashboard/"):
         return await call_next(request)
 
     client_ip = request.headers.get("X-Forwarded-For", request.client.host)
@@ -228,6 +237,53 @@ async def zero_trust_check(request: Request, call_next):
 
     response = await call_next(request)
     return response
+
+def _dashboard_incidents():
+    """Return incidents in the shape consumed by the React dashboard."""
+    conn = sqlite3.connect("security.db", timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT id, timestamp, source_ip, incident_type, details, severity, mitre_technique, review_status, ai_explanation FROM incidents ORDER BY id DESC").fetchall()
+        return [
+            {
+                "id": row["id"],
+                "timestamp": datetime.fromtimestamp(row["timestamp"]).isoformat() + "Z",
+                "sourceIp": row["source_ip"],
+                "country": get_country(row["source_ip"]),
+                "incidentType": row["incident_type"],
+                "severity": row["severity"] or "Low",
+                "mitreTechnique": row["mitre_technique"] or "N/A",
+                "details": row["ai_explanation"] if row["ai_explanation"] not in (None, "N/A") else row["details"],
+                "reviewStatus": row["review_status"] or "unreviewed",
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+@app.get("/dashboard/incidents")
+async def dashboard_incidents():
+    return _dashboard_incidents()
+
+
+@app.patch("/dashboard/incidents/{incident_id}/review")
+async def dashboard_review(incident_id: int, request: Request):
+    if request.headers.get("X-Dashboard-Role") != "Admin":
+        return Response(content="Admin role required", status_code=403)
+    payload = await request.json()
+    review_status = payload.get("reviewStatus")
+    if review_status not in {"unreviewed", "confirmed", "false_positive"}:
+        return Response(content="Invalid review status", status_code=400)
+    conn = sqlite3.connect("security.db", timeout=10)
+    try:
+        cursor = conn.execute("UPDATE incidents SET review_status = ? WHERE id = ?", (review_status, incident_id))
+        conn.commit()
+        if cursor.rowcount == 0:
+            return Response(content="Incident not found", status_code=404)
+    finally:
+        conn.close()
+    return {"success": True, "id": incident_id, "reviewStatus": review_status}
 
 @app.get("/{path:path}")
 async def proxy_request(path: str, request: Request):

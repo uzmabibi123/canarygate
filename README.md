@@ -65,6 +65,20 @@ uvicorn proxy:app --host 0.0.0.0 --port 8000
 streamlit run dashboard.py --server.port 8501
 ```
 
+### React SOC dashboard
+
+The repository now also contains `frontend/`, a standalone React/Vite dashboard that uses the same SQLite incident data through the FastAPI proxy. Start the backend on port `8000`, then run:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the Vite URL shown in the terminal. During development, `/dashboard/*` requests are proxied to `http://127.0.0.1:8000`. The dashboard falls back to seeded demo data when the API is offline, but when the API is running it loads real incidents and Admin review changes are persisted to `security.db` through `PATCH /dashboard/incidents/{id}/review`.
+
+Demo dashboard accounts are `admin / admin123` and `viewer / viewer123`. These are local prototype accounts; use server-side authentication and password hashing before production deployment.
+
 ## 🧪 Security Testing
 
 The proxy was tested against 18+ attack scenarios including SQL injection, path traversal, JWT tampering, header injection, oversized payloads, and concurrent-load race conditions. One genuine bug was found — a crash under concurrent requests — and fixed. Full details are in the project report.
